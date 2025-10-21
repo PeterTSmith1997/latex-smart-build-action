@@ -1,0 +1,187 @@
+name: 'LaTeX Smart Build'
+description: 'Automatically compile LaTeX documents with smart dependency tracking, only rebuilding affected documents when files change'
+author: 'PeterTSmith1997'
+
+branding:
+  icon: 'file-text'
+  color: 'blue'
+
+inputs:
+  max-drafts:
+    description: 'Maximum number of draft PDFs to keep per document'
+    required: false
+    default: '3'
+  
+  output-dir:
+    description: 'Directory to store compiled PDFs'
+    required: false
+    default: 'drafts'
+  
+  compiler:
+    description: 'LaTeX compiler to use (xelatex, pdflatex, lualatex)'
+    required: false
+    default: 'xelatex'
+  
+  biber:
+    description: 'Run biber for bibliography processing'
+    required: false
+    default: 'true'
+  
+  commit-message:
+    description: 'Commit message for PDF updates'
+    required: false
+    default: 'Update PDFs'
+  
+  wordcount:
+    description: 'Update wordcount in TeX files'
+    required: false
+    default: 'true'
+
+  wordcount-files:
+    description: 'Comma-separated list of top-level TeX files to update wordcount for (relative paths)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get changed files
+      id: changed
+      uses: tj-actions/changed-files@v47
+
+    - name: Find top-level TeX files
+      id: toplevel
+      shell: bash
+      run: |
+        TOPLEVEL=""
+        for f in $(find . -type f -name "*.tex"); do
+          if grep -q '\\documentclass' "$f"; then
+            TOPLEVEL="$TOPLEVEL $f"
+          fi
+        done
+        echo "files=$TOPLEVEL" >> $GITHUB_OUTPUT
+
+    - name: Decide which TeX files to build
+      id: buildset
+      shell: bash
+      run: |
+        find_dependent_mains() {
+          local changed_file="$1"
+          local basename=$(basename "$changed_file" .tex)
+          local rel_path="${changed_file#./}"
+          local rel_path_no_ext="${rel_path%.tex}"
+          local mains=()
+
+          for main in ${{ steps.toplevel.outputs.files }}; do
+            if [[ "$main" == "$changed_file" ]]; then
+              mains+=("$main")
+              continue
+            fi
+
+            patterns=("$basename" "$rel_path_no_ext" "$rel_path")
+            main_dir=$(dirname "$main")
+            rel_from_main=$(realpath --relative-to="$main_dir" "$changed_file" 2>/dev/null || echo "")
+            [[ -n "$rel_from_main" ]] && patterns+=("${rel_from_main%.tex}")
+
+            for p in "${patterns[@]}"; do
+              if grep -E "\\\\(include|input)\\{[^}]*${p}[^}]*\\}" "$main" >/dev/null 2>&1; then
+                mains+=("$main")
+                break
+              fi
+            done
+          done
+
+          echo "${mains[@]}" | tr ' ' '\n' | sort -u
+        }
+
+        FILES=""
+        CHANGED="${{ steps.changed.outputs.all_changed_files }}"
+
+        for file in $CHANGED; do
+          if [[ "$file" == *.tex ]]; then
+            if grep -q '\\documentclass' "$file" 2>/dev/null; then
+              [[ ! " $FILES " =~ " $file " ]] && FILES="$FILES $file"
+            else
+              dependent_mains=$(find_dependent_mains "$file")
+              for main in $dependent_mains; do
+                [[ ! " $FILES " =~ " $main " ]] && FILES="$FILES $main"
+              done
+            fi
+          fi
+        done
+
+        echo "files=$FILES" >> $GITHUB_OUTPUT
+
+    - name: Report if no TeX files need building
+      if: steps.buildset.outputs.files == ''
+      shell: bash
+      run: echo "✓ No TeX files changed → skipping build."
+
+    - name: Install LaTeX
+      if: steps.buildset.outputs.files != ''
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y texlive-xetex texlive-latex-extra texlive-extra-utils biber latexmk
+
+    - name: Compile selected TeX files and optionally update wordcount
+      if: steps.buildset.outputs.files != ''
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.output-dir }}
+        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
+        COMPILER="${{ inputs.compiler }}"
+        USE_BIBER="${{ inputs.biber }}"
+        MAX_DRAFTS="${{ inputs.max-drafts }}"
+        UPDATE_WC="${{ inputs.wordcount }}"
+        WC_FILES=()
+
+        if [[ "${{ inputs.wordcount-files }}" != "" ]]; then
+          IFS=',' read -ra WC_FILES <<< "${{ inputs.wordcount-files }}"
+        fi
+
+        for texfile in ${{ steps.buildset.outputs.files }}; do
+          BASENAME=$(basename "$texfile" .tex)
+          DIRNAME=$(dirname "$texfile")
+          cd "$DIRNAME"
+
+          echo "📄 Compiling $texfile with $COMPILER..."
+          $COMPILER "$BASENAME.tex"
+
+          if [[ "$USE_BIBER" == "true" ]]; then
+            echo "📚 Running biber..."
+            biber "$BASENAME" || true
+          fi
+
+          $COMPILER "$BASENAME.tex"
+          $COMPILER "$BASENAME.tex"
+
+          # Word count for selected files
+          if [[ "$UPDATE_WC" == "true" ]]; then
+            for wc_file in "${WC_FILES[@]}"; do
+              if [[ -f "$wc_file" ]] && grep -q '\\documentclass' "$wc_file"; then
+                echo "🔢 Calculating word count for $wc_file..."
+                WORDS=$(texcount -inc -total "$wc_file" | grep -E "Words in text|Total Words in text" | awk '{print $NF}')
+                echo "Word count for $wc_file: $WORDS"
+                sed -i "s/wordcount{[0-9]*}/wordcount{$WORDS}/" "$wc_file"
+                git add "$wc_file"
+              fi
+            done
+          fi
+
+          cp "$BASENAME.pdf" "$GITHUB_WORKSPACE/${{ inputs.output-dir }}/${BASENAME}_$TIMESTAMP.pdf"
+
+          cd "$GITHUB_WORKSPACE/${{ inputs.output-dir }}"
+          ls -1 "${BASENAME}_"*.pdf 2>/dev/null | sort -r | tail -n +$((MAX_DRAFTS + 1)) | xargs -r rm -v
+          cd "$GITHUB_WORKSPACE"
+        done
+
+    - name: Commit and push changes
+      if: steps.buildset.outputs.files != ''
+      shell: bash
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add ${{ inputs.output-dir }}
+        git commit -m "${{ inputs.commit-message }} ($(date))" || echo "No changes to commit"
+        git push
