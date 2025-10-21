@@ -1,0 +1,1 @@
+# latex-smart-build-action
