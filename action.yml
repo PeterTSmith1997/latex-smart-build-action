@@ -1,4 +1,4 @@
-name: 'LaTeX Smart Build'
+name: 'Smart Build for LaTeX'
 description: 'Automatically compile LaTeX documents with smart dependency tracking, only rebuilding affected documents when files change'
 author: 'PeterTSmith1997'
 
