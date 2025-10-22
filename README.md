@@ -1,4 +1,4 @@
-# LaTeX Smart Build Action
+# smart build for latex
 
 A GitHub Action that intelligently compiles LaTeX documents with automatic dependency tracking. Only rebuilds documents affected by changes, saving time in complex multi-document projects.
 
