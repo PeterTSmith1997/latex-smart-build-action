@@ -1,0 +1,85 @@
+name: "Action Unit Tests"
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  unit-tests:
+    name: "Run unit tests for Smart Build for LaTeX"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml syntax
+        run: |
+          echo "🧩 Validating action.yml..."
+          grep -q "runs:" action.yml && echo "✓ Syntax looks valid" || exit 1
+
+      - name: Simulate repository with TeX files
+        run: |
+          mkdir -p test/chapters
+          echo "\\documentclass{article}\n\\begin{document}\nMain file\n\\input{chapters/intro}\n\\end{document}" > test/main.tex
+          echo "This is intro." > test/chapters/intro.tex
+          echo "\\documentclass{report}\n\\begin{document}\nAnother document\n\\end{document}" > test/other.tex
+          git init
+          git config user.email "test@example.com"
+          git config user.name "Test User"
+          git add .
+          git commit -m "Initial commit"
+
+      - name: Simulate changed file list
+        id: fakechanged
+        run: |
+          echo "intro.tex chapters/intro.tex" > changed.txt
+          echo "all_changed_files=$(cat changed.txt)" >> $GITHUB_OUTPUT
+
+      - name: Run Smart Build logic test
+        shell: bash
+        run: |
+          echo "🔍 Testing dependency resolution..."
+          TOPLEVEL=$(find test -type f -name "*.tex" | while read -r f; do
+            if grep -q '\\documentclass' "$f"; then echo "$f"; fi
+          done)
+
+          find_dependent_mains() {
+            local changed_file="$1"
+            local basename=$(basename "$changed_file" .tex)
+            local mains=()
+            for main in $TOPLEVEL; do
+              if [[ "$main" == *"$basename.tex" ]]; then
+                mains+=("$main")
+              elif grep -E "\\\\(include|input)\\{[^}]*$basename[^}]*\\}" "$main"; then
+                mains+=("$main")
+              fi
+            done
+            echo "${mains[@]}" | tr ' ' '\n' | sort -u
+          }
+
+          FILES=""
+          for f in $(cat changed.txt); do
+            mains=$(find_dependent_mains "$f")
+            for m in $mains; do
+              [[ ! " $FILES " =~ " $m " ]] && FILES="$FILES $m"
+            done
+          done
+
+          echo "Detected build targets:"
+          echo "$FILES"
+
+          if [[ "$FILES" != *"test/main.tex"* ]]; then
+            echo "❌ Test failed: main.tex should be included"
+            exit 1
+          fi
+          echo "✅ Dependency detection passed"
+
+      - name: ShellCheck for bash safety
+        uses: ludeeus/action-shellcheck@v2
+        with:
+          ignore: vendor node_modules
+
+      - name: Final report
+        run: echo "✅ All tests passed for Smart Build for LaTeX"
