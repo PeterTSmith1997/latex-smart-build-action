@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: PeterTSmith1997/latex-smart-build-action@1.0.0
+      - uses: PeterTSmith1997/smart-build-for-latex@1.0.0
 ```
 
 ### Advanced Configuration
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: PeterTSmith1997/latex-smart-build-action@v1
+      - uses: PeterTSmith1997/smart-build-for-latex@1.0.0
         with:
           compiler: 'pdflatex'
           max-drafts: '5'
@@ -99,7 +99,7 @@ Supports deeply nested `\include{}` or `\input{}` paths.
 ### Dissertation/Thesis Repository
 
 ```yaml
-uses: PeterTSmith1997/latex-smart-build-action@v1
+uses: PeterTSmith1997/smart-build-for-latex@1.0.0
 with:
   compiler: 'xelatex'
   max-drafts: '10'
@@ -111,7 +111,7 @@ with:
 ### Multiple Papers Repository
 
 ```yaml
-uses: PeterTSmith1997/latex-smart-build-action@v1
+uses: PeterTSmith1997/smart-build-for-latex@1.0.0
 with:
   compiler: 'pdflatex'
   max-drafts: '3'
@@ -124,7 +124,7 @@ with:
 ### Book/Manual with Complex Structure
 
 ```yaml
-uses: PeterTSmith1997/latex-smart-build-action@v1
+uses: PeterTSmith1997/smart-build-for-latex@1.0.0
 with:
   compiler: 'lualatex'
   biber: 'true'
