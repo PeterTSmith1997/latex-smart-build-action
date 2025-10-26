@@ -112,6 +112,46 @@ runs:
 
         echo "files=$FILES" >> $GITHUB_OUTPUT
 
+    - name: Determine which wordcount files need updating
+      id: wordcount_check
+      shell: bash
+      run: |
+        WC_TO_UPDATE=""
+        UPDATE_WC="${{ inputs.wordcount }}"
+        
+        if [[ "$UPDATE_WC" == "true" ]] && [[ "${{ inputs.wordcount-files }}" != "" ]]; then
+          IFS=',' read -ra WC_FILES <<< "${{ inputs.wordcount-files }}"
+          CHANGED="${{ steps.changed.outputs.all_changed_files }}"
+          
+          for wc_file in "${WC_FILES[@]}"; do
+            # Trim whitespace
+            wc_file=$(echo "$wc_file" | xargs)
+            
+            # Check if this wordcount file or any of its dependencies have changed
+            if echo "$CHANGED" | grep -q "$wc_file"; then
+              WC_TO_UPDATE="$WC_TO_UPDATE $wc_file"
+            else
+              # Check if any of the changed files are included in this wordcount file
+              for changed in $CHANGED; do
+                if [[ "$changed" == *.tex ]]; then
+                  basename=$(basename "$changed" .tex)
+                  if grep -E "\\\\(include|input)\\{[^}]*${basename}[^}]*\\}" "$wc_file" >/dev/null 2>&1; then
+                    WC_TO_UPDATE="$WC_TO_UPDATE $wc_file"
+                    break
+                  fi
+                fi
+              done
+            fi
+          done
+        fi
+        
+        echo "files=$WC_TO_UPDATE" >> $GITHUB_OUTPUT
+        if [[ -n "$WC_TO_UPDATE" ]]; then
+          echo "📊 Word count will be updated for:$WC_TO_UPDATE"
+        else
+          echo "📊 No word count updates needed"
+        fi
+
     - name: Report if no TeX files need building
       if: steps.buildset.outputs.files == ''
       shell: bash
@@ -124,7 +164,7 @@ runs:
         sudo apt-get update
         sudo apt-get install -y texlive-xetex texlive-latex-extra texlive-extra-utils biber latexmk
 
-    - name: Compile selected TeX files and optionally update wordcount
+    - name: Compile selected TeX files
       if: steps.buildset.outputs.files != ''
       shell: bash
       run: |
@@ -133,12 +173,6 @@ runs:
         COMPILER="${{ inputs.compiler }}"
         USE_BIBER="${{ inputs.biber }}"
         MAX_DRAFTS="${{ inputs.max-drafts }}"
-        UPDATE_WC="${{ inputs.wordcount }}"
-        WC_FILES=()
-
-        if [[ "${{ inputs.wordcount-files }}" != "" ]]; then
-          IFS=',' read -ra WC_FILES <<< "${{ inputs.wordcount-files }}"
-        fi
 
         for texfile in ${{ steps.buildset.outputs.files }}; do
           BASENAME=$(basename "$texfile" .tex)
@@ -156,19 +190,6 @@ runs:
           $COMPILER "$BASENAME.tex"
           $COMPILER "$BASENAME.tex"
 
-          # Word count for selected files
-          if [[ "$UPDATE_WC" == "true" ]]; then
-            for wc_file in "${WC_FILES[@]}"; do
-              if [[ -f "$wc_file" ]] && grep -q '\\documentclass' "$wc_file"; then
-                echo "🔢 Calculating word count for $wc_file..."
-                WORDS=$(texcount -inc -total "$wc_file" | grep -E "Words in text|Total Words in text" | awk '{print $NF}')
-                echo "Word count for $wc_file: $WORDS"
-                sed -i "s/wordcount{[0-9]*}/wordcount{$WORDS}/" "$wc_file"
-                git add "$wc_file"
-              fi
-            done
-          fi
-
           cp "$BASENAME.pdf" "$GITHUB_WORKSPACE/${{ inputs.output-dir }}/${BASENAME}_$TIMESTAMP.pdf"
 
           cd "$GITHUB_WORKSPACE/${{ inputs.output-dir }}"
@@ -176,12 +197,32 @@ runs:
           cd "$GITHUB_WORKSPACE"
         done
 
+    - name: Update word counts
+      if: steps.wordcount_check.outputs.files != ''
+      shell: bash
+      run: |
+        WC_FILES="${{ steps.wordcount_check.outputs.files }}"
+        
+        for wc_file in $WC_FILES; do
+          if [[ -f "$wc_file" ]] && grep -q '\\documentclass' "$wc_file"; then
+            echo "🔢 Calculating word count for $wc_file..."
+            WORDS=$(texcount -inc -total "$wc_file" | grep -E "Words in text|Total Words in text" | awk '{print $NF}')
+            echo "Word count for $wc_file: $WORDS"
+            sed -i "s/wordcount{[0-9]*}/wordcount{$WORDS}/" "$wc_file"
+            git add "$wc_file"
+          fi
+        done
+
     - name: Commit and push changes
-      if: steps.buildset.outputs.files != ''
+      if: steps.buildset.outputs.files != '' || steps.wordcount_check.outputs.files != ''
       shell: bash
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add ${{ inputs.output-dir }}
+        
+        if [[ "${{ steps.buildset.outputs.files }}" != "" ]]; then
+          git add ${{ inputs.output-dir }}
+        fi
+        
         git commit -m "${{ inputs.commit-message }} ($(date))" || echo "No changes to commit"
         git push
